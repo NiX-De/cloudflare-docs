@@ -87,7 +87,7 @@ for await (const event of parseSSEStream<ExecEvent>(stream)) {
 Start a long-running background process.
 
 ```ts
-const process = await sandbox.startProcess(command: string, options?: ProcessOptions): Promise<ProcessInfo>
+const process = await sandbox.startProcess(command: string, options?: ProcessOptions): Promise<Process>
 ```
 
 **Parameters**:
@@ -96,7 +96,16 @@ const process = await sandbox.startProcess(command: string, options?: ProcessOpt
   - `cwd` - Working directory
   - `env` - Environment variables
 
-**Returns**: `Promise<ProcessInfo>` with `id`, `pid`, `command`, `status`
+**Returns**: `Promise<Process>` object with properties and methods:
+- `id` - Unique process identifier
+- `pid` - System process ID
+- `command` - Command that was executed
+- `status` - Current process status
+- `kill(signal?: string)` - Terminate the process
+- `getStatus()` - Get current process status
+- `getLogs()` - Get accumulated logs
+- `waitForLog(pattern, timeout?)` - Wait for log pattern (see [process.waitForLog()](#processwaitforlog))
+- `waitForPort(port, options?)` - Wait for port readiness (see [process.waitForPort()](#processwaitforport))
 
 <TypeScriptExample>
 ```
@@ -210,6 +219,95 @@ await new Promise(resolve => setTimeout(resolve, 5000));
 
 const logs = await sandbox.getProcessLogs(server.id);
 console.log('Server logs:', logs);
+```
+</TypeScriptExample>
+
+### `process.waitForLog()`
+
+Wait for a log pattern to appear in process output. This method checks existing logs first, then streams new output until the pattern is found.
+
+```ts
+const result = await process.waitForLog(pattern: string | RegExp, timeout?: number): Promise<WaitForLogResult>
+```
+
+**Parameters**:
+- `pattern` - String to search for or RegExp pattern to match
+- `timeout` (optional) - Maximum time to wait in milliseconds (no timeout by default)
+
+**Returns**: `Promise<WaitForLogResult>` with:
+- `line` - The log line that matched the pattern
+- `match` (optional) - RegExp capture groups if pattern was a RegExp
+
+**Errors**:
+- `ProcessReadyTimeoutError` - Pattern not found within timeout period
+- `ProcessExitedBeforeReadyError` - Process exited before pattern appeared
+
+<TypeScriptExample>
+```
+// Wait for simple string pattern
+const server = await sandbox.startProcess('python -m http.server 8000');
+await server.waitForLog('Serving HTTP');
+console.log('Server is ready');
+
+// Wait with timeout
+const app = await sandbox.startProcess('npm run dev');
+await app.waitForLog('Local: http://localhost:3000', 30000); // 30s timeout
+
+// Use RegExp for pattern matching
+const build = await sandbox.startProcess('npm run build');
+const result = await build.waitForLog(/Built in (\d+)ms/);
+console.log('Matched line:', result.line);
+console.log('Build time:', result.match?.[1]);
+```
+</TypeScriptExample>
+
+### `process.waitForPort()`
+
+Wait for a process to start listening on a port. Supports both HTTP health checks and TCP connection checks.
+
+```ts
+await process.waitForPort(port: number, options?: WaitForPortOptions): Promise<void>
+```
+
+**Parameters**:
+- `port` - Port number to check
+- `options` (optional):
+  - `mode` - Check mode: `'http'` (default) or `'tcp'`
+  - `path` - HTTP path to check (default: `'/'`, only for HTTP mode)
+  - `status` - Expected HTTP status code or range (default: `{ min: 200, max: 399 }`)
+    - Single number: exact match (e.g., `200`)
+    - Object with min/max: range match (e.g., `{ min: 200, max: 299 }`)
+  - `timeout` - Maximum time to wait in milliseconds (no timeout by default)
+  - `interval` - Interval between checks in milliseconds (default: `500`)
+
+**Errors**:
+- `ProcessReadyTimeoutError` - Port not ready within timeout period
+- `ProcessExitedBeforeReadyError` - Process exited before port became ready
+
+<TypeScriptExample>
+```
+// Wait for HTTP endpoint with default settings (200-399 status on /)
+const web = await sandbox.startProcess('npm run dev');
+await web.waitForPort(3000);
+console.log('Web server ready at http://localhost:3000');
+
+// Check specific health endpoint
+const api = await sandbox.startProcess('node api.js');
+await api.waitForPort(8080, {
+  path: '/health',
+  status: 200,
+  timeout: 30000 // 30 second timeout
+});
+
+// TCP-only check (just verify port accepts connections)
+const db = await sandbox.startProcess('redis-server');
+await db.waitForPort(6379, { mode: 'tcp' });
+
+// Wait for specific status code range
+const app = await sandbox.startProcess('python app.py');
+await app.waitForPort(5000, {
+  status: { min: 200, max: 299 } // Only 2xx status codes
+});
 ```
 </TypeScriptExample>
 

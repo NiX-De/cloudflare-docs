@@ -83,36 +83,55 @@ const isRunning = processes.some(p => p.id === processId && p.status === 'runnin
 ```
 </TypeScriptExample>
 
+## Wait for process readiness
+
+Use `waitForPort()` or `waitForLog()` to wait for a process to become ready before proceeding:
+
+<TypeScriptExample>
+```
+// Wait for HTTP server to be ready
+const server = await sandbox.startProcess('node server.js');
+await server.waitForPort(3000);
+console.log('Server is ready at http://localhost:3000');
+
+// Wait for log pattern
+const app = await sandbox.startProcess('npm run dev');
+await app.waitForLog('Server listening');
+console.log('App is ready');
+
+// Wait with timeout and custom health check
+const api = await sandbox.startProcess('python api.py');
+await api.waitForPort(8080, {
+  path: '/health',
+  timeout: 30000 // 30 seconds
+});
+```
+</TypeScriptExample>
+
 ## Monitor process logs
 
-Stream logs in real-time to detect when a service is ready:
+Get accumulated logs from a running or completed process:
+
+<TypeScriptExample>
+```
+const logs = await server.getLogs();
+console.log('stdout:', logs.stdout);
+console.log('stderr:', logs.stderr);
+```
+</TypeScriptExample>
+
+Or stream logs in real-time:
 
 <TypeScriptExample>
 ```
 import { parseSSEStream, type LogEvent } from '@cloudflare/sandbox';
 
 const server = await sandbox.startProcess('node server.js');
-
-// Stream logs
 const logStream = await sandbox.streamProcessLogs(server.id);
 
 for await (const log of parseSSEStream<LogEvent>(logStream)) {
   console.log(log.data);
-
-  if (log.data.includes('Server listening')) {
-    console.log('Server is ready!');
-    break;
-  }
 }
-```
-</TypeScriptExample>
-
-Or get accumulated logs:
-
-<TypeScriptExample>
-```
-const logs = await sandbox.getProcessLogs(server.id);
-console.log('Logs:', logs);
 ```
 </TypeScriptExample>
 
@@ -137,23 +156,19 @@ Start services in sequence, waiting for dependencies:
 
 <TypeScriptExample>
 ```
-import { parseSSEStream, type LogEvent } from '@cloudflare/sandbox';
-
 // Start database first
 const db = await sandbox.startProcess('redis-server');
 
 // Wait for database to be ready
-const dbLogs = await sandbox.streamProcessLogs(db.id);
-for await (const log of parseSSEStream<LogEvent>(dbLogs)) {
-  if (log.data.includes('Ready to accept connections')) {
-    break;
-  }
-}
+await db.waitForPort(6379, { mode: 'tcp' });
 
 // Now start API server (depends on database)
 const api = await sandbox.startProcess('node api-server.js', {
   env: { DATABASE_URL: 'redis://localhost:6379' }
 });
+
+// Wait for API to be ready
+await api.waitForPort(8080, { path: '/health' });
 
 console.log('All services running');
 ```
@@ -165,7 +180,7 @@ By default, containers automatically shut down after 10 minutes of inactivity. F
 
 <TypeScriptExample>
 ```ts
-import { getSandbox, parseSSEStream, type LogEvent } from '@cloudflare/sandbox';
+import { getSandbox } from '@cloudflare/sandbox';
 
 export { Sandbox } from '@cloudflare/sandbox';
 
@@ -180,16 +195,8 @@ export default {
       // Start a long-running build process
       const build = await sandbox.startProcess('npm run build:production');
 
-      // Monitor progress
-      const logs = await sandbox.streamProcessLogs(build.id);
-
-      // Process can run indefinitely without container shutdown
-      for await (const log of parseSSEStream<LogEvent>(logs)) {
-        console.log(log.data);
-        if (log.data.includes('Build complete')) {
-          break;
-        }
-      }
+      // Wait for completion
+      await build.waitForLog('Build complete', 600000); // 10 minute timeout
 
       return new Response('Build completed');
     } finally {
@@ -207,7 +214,8 @@ When using `keepAlive: true`, containers will not automatically timeout. You **m
 
 ## Best practices
 
-- **Wait for readiness** - Stream logs to detect when services are ready
+- **Wait for readiness** - Use `waitForPort()` or `waitForLog()` to detect when services are ready
+- **Set timeouts** - Always specify timeout values to prevent indefinite waiting
 - **Clean up** - Always stop processes when done
 - **Handle failures** - Monitor logs for errors and restart if needed
 - **Use try/finally** - Ensure cleanup happens even on errors
